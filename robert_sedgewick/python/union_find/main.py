@@ -1,31 +1,33 @@
 import sys
-import UF
 
-def main(filename):
-    size = 0
+def main(filename, UF_class):
+    fp = open(filename)
+    size = int(fp.readline())
+
+    uf = UF_class(size)
     connections = []
-    with open(filename) as fp:
-        size = int(fp.readline())
-        for line in fp:
-            p = int(line.split(' ')[0])
-            q = int(line.split(' ')[1])
-            connections.append((p, q))
+    for line in fp:
+        p = int(line.split(' ')[0])
+        q = int(line.split(' ')[1])
+        if not uf.connected(p, q):
+            uf.union(p, q)
 
-    uf = UF.UF(size)
-    for (p, q) in connections:
-        uf.union(p, q)
-
+    """
     while True:
         line = sys.stdin.readline()
         p = int(line.split(' ')[0])
         q = int(line.split(' ')[1])
 
-        if uf.find(p, q):
+        if uf.connected(p, q):
             print p, q, "are connected"
         else:
             print p, q, "are not connected"
-
+    """
 
 if __name__ == "__main__":
-    filename = sys.argv[1]
-    main(filename)
+    classname = sys.argv[1]
+    filename = sys.argv[2]
+
+    module = __import__(classname)
+    class_ = getattr(module, classname)
+    main(filename, class_)
