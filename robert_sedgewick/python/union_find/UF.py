@@ -11,10 +11,7 @@ class UF:
 
         self._a = map(lambda x: idx_p if x == idx_q else x, self._a)
 
-def main():
 
-if __name__ == "__main__":
-    main()
 
 
 
