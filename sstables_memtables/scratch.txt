@@ -330,4 +330,3 @@ Table:
             Iterator()
             is_empty()
         private:
-
