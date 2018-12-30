@@ -1,0 +1,333 @@
+Table:
+    public:
+        Table Table(tablename) {
+            tablename = tablename
+            sstable_path = getSSTablePath()
+            sstables = SSTables(sstable_path)
+            memtables = Memtables()
+            return this
+        }
+        void put(k, v) {
+            memtables.put(k, v)
+        }
+        Value get(k) {
+            v = memtables.get(k)
+            if (!v) {
+                v = sstables.get(k)
+            }
+            return v
+        }
+        flush() {
+            memtables.flush(sstables)
+        }
+        compact() {
+
+        }
+    private:
+        string tablename
+        Memtables memtables
+        SSTables sstables
+
+        dirpath get_default_path() {
+            # TODO: Enhance it to read from a config file
+            return DEFAULT_SSTABLE_PATH
+        }
+        dirpath getSSTablePath() {
+            return get_default_path() + tablename
+        }
+
+    Memtables:
+        # TODO: Rething Concurrency. Maybe use Concurrent Hash Map?
+        public:
+            Memtables Memtables() {
+                memtable_active = Memtable()
+                memtable_q_lock = Lock()
+                memtable_flushing_q = Queue<Memtable>()
+                return this
+            }
+            void put(k, v) {
+                memtable_q_lock.lock()
+                if (memtable_active.full()) {
+                    memtable_flushing_q.enqueue(memtable_active)
+                    memtable_active = Memtable()
+                }
+                memtable_active.put(k, v)
+                memtable_q_lock.unlock()
+            }
+            Value get(k) {
+                memtable_q_lock.lock()
+                v = memtable_active.get(k)
+                memtables_tmp_q = memtable_flushing_q
+                memtable_q_lock.unlock()
+                if (!v) {
+                    for memtable in memtable_tmp_q:
+                        v = memtable.get(k)
+                        if (v) {
+                            break
+                        }
+                }
+
+                return v
+            }
+        private:
+            Memtable memtable_active
+            Lock memtable_q_lock
+            Queue<Memtable> memtable_flushing_q
+
+            flush(sstables) {
+                memtable_q_lock.lock()
+                memtables_tmp_q = memtable_flushing_q
+                memtable_q_lock.unlock()
+                while not memtable_tmp_q.is_empty:
+                    memtable = memtable_tmp_q.dequeue()
+                    memtable.flush(sstables)
+                    memtable_q_lock.lock()
+                    # TODO: assert memtable_flushing_q.top() == memtable
+                    memtable_flushing_q.dequeue()
+                    memtable_q_lock.unlock()
+            }
+
+    Memtable:
+        public:
+            Memtable Memtable() {
+                memtable = {}
+                return this
+            }
+            put(k, v) {
+                memtable[k] = v
+            }
+            Value get(k) {
+                if k in memtable: return memtable[k]
+                return v
+            }
+            bool full() {
+                # TODO : Also consider size of memtable
+                # TODO : Read len of keys and size of memtable from config
+                return len(memtable) > MAX_KEYS_PER_MEMTABLE
+            }
+        private:
+            memtable {}
+            flush(sstables) {
+                sstable = sstables.get_new_sstable()
+                for k, v in memtable:
+                    sstable.put(k, v)
+                sstable.close()
+            }
+
+    SSTables:
+        public:
+            SSTable SSTable(path) {
+                sstables = loadSSTables(path)
+                sstables_lock = Lock()
+            }
+            Value get(k) {
+                v = None
+                sstables_lock.lock()
+                for sstable in sstables:
+                    if sstable.contains(k):
+                        v = sstable.get(k)
+                        break
+                sstables_lock.unlock()
+                return v
+            }
+            SSTable get_new_sstable() {
+                latest_sstable_num += 1
+                sstable = SSTable(latest_sstable_num)
+                sstables.append(sstable)
+                return sstable
+            }
+            iterator() {
+                assert sstables is sorted
+                return sstables
+            }
+        private:
+            SSTable[] sstables
+            Lock sstables_lock
+            int latest_sstable_num = -1
+            dirpath path
+            SSTable[] loadSSTables(path) {
+                path = path
+                sstables = []
+                for sub_dir in path:
+                    if valid_sstable_sub_dir(sub_dir):
+                        sstable = SSTable(sub_dir)
+                        sstables.append(sstable)
+                        if sstable.get_sstable_num() > latest_sstable_num:
+                            latest_sstable_num = sstable.get_sstable_num()
+                sstables = sort(sstables)
+            }
+            bool valid_sstable_sub_dir(path) {
+                # TODO : Revisit this logic after implementing flush
+                for file in path:
+                    if "flushing" in file:
+                        return False
+                return True
+            }
+
+    SSTable:
+        public:
+            SSTable(path, latest_sstable_num) {
+                mkdir(path + latest_sstable_num)
+                return this
+            }
+            SSTable SSTable(dir) {
+                indexFile = IndexFile(dir)
+                dataFile = DataFile(dir)
+                sstable_num = get_sstable_num(dir)
+                assert indexFile has sstable_num
+                assert dataFile has sstable_num
+            }
+            Iterator()
+            bool contains(k) {
+                return indexFile.contains(k)
+            }
+            Value get(k) {
+                if not contains(k) return None
+                offset = indexFile.getOffset(k)
+                key, value = dataFile.getRecord(offset)
+                assert key == k
+                return value
+            }
+            put(k, v) {
+               data_map[k] = v
+            }
+            compare(sstable) {
+                # Compare based on sstable number
+            }
+            close() {
+
+                fp.open(path + "flushing", "w")
+                fp.close()
+
+                data_fp = open(path + "Data.db", "ab+")
+                for k, v in data_map:
+                    index_map[k] = fp.tell()
+                    serialize(fp, k, v)
+                data_fp.close()
+
+                index_fp = open(path + Index.db", "ab+")
+                IndexFile.serialize(fp, index_map)
+                index_fp.close()
+
+                // rmfile path+"flushing"
+            }
+        private:
+            IndexFile indexFile
+            DataFile dataFile
+            index_map {}
+            data_map {}
+            sstable_num
+            int get_sstable_num(dir) {
+                return basename(dir)
+            }
+            int get_sstable_num() {
+                return sstable_num
+            }
+
+    IndexFile:
+        public:
+            Index IndexFile(dir) {
+                index_file = get_index_file_path(dir)
+                index_map = deserialize()
+                return this
+            }
+            bool contains(k) {
+                return k in index_map
+            }
+            int getOffset(k) {
+                assert k in index_map
+                return index_map[k][offset]
+            }
+         private:
+            index_file = None
+            index_map = {}
+            file get_index_file_path(dir) {
+                # TODO: Enhance to read from config
+                return dir + "Index.db"
+            }
+            serialize() {
+                import pickle
+                pickle.dump(index_map, open(index_file, "wb")
+            }
+            deserialize() {
+                import pickle
+                return pickle.load(open(index_file, "rb"))
+            }
+
+
+     DataFile:
+        # DataFile format:
+        # DataRecord 1
+        # <len_of_data_record_1>    // struct.pack("<I", len(map)
+        # Pickle of map             // pickle.dumps({"key": "KEY1", "value": "VALUE1", "chksum", "CHKSUM1"})
+        # DataRecord 2
+        # <len_of_data_record_2>    // struct.pack("<I", len(map)
+        # Pickle of map             // pickle.dumps({"key": "KEY2", "value": "VALUE2", "chksum", "CHKSUM2"})
+
+        public:
+            DataFile DataFile(dir) {
+                data_file = get_data_file_path(dir)
+                return this
+            }
+            key, value getRecord(offset) {
+                fp = open(data_file, "rb")
+                return DataRecord.deserialize(fp, offset)
+            }
+         private:
+            data_file
+            file get_data_file_path(dir) {
+                # TODO: Enhance to read from config
+                retur dir + "Data.db"
+            }
+
+    DataRecord:
+        # {"key": "KEY1", "value": "VALUE1", "chksum": "CHKSUM1"
+
+        $ TODO: Enhance Checksum Calculation
+        public:
+            deserialize(fp, offset) {
+                fp.seek(offset, 0)
+                record_len_fmt_len = struct.calcsize(record_len_fmt)
+                record_len = fp.read(record_len_fmt_len)
+                record_pickle = fp.read(record_len)
+                record = pickle.loads(record_pickle)
+                key = record["key"]
+                value = record["value"]
+                assert record["chksum"] == CHKSUM
+                return key, value
+            }
+            serialize(fp, k, v) {
+                data_map = {}
+                data_map["key"] = k
+                data_map["value"] = v
+                data_map["chksum"] = "CHKSUM"
+
+                record_fmt = get_record_len_fmt_len()
+                record_len = len(record)
+                record_len_pack = struct.pack(record_fmt, record_len)
+                record_pack = pickle.dumps(data_map)
+                fp.write(record_len_pack)
+                fp.write(record_pack)
+            }
+         private:
+            record_len_fmt = ">I"
+
+    Lock:
+        public:
+            Lock Lock() {
+                return this
+            }
+            lock()
+            unlock()
+        private:
+
+    Queue<T>:
+        public:
+            Queue Queue() {
+                return this
+            }
+            enqueue(Item)
+            Iterator()
+            is_empty()
+        private:
+

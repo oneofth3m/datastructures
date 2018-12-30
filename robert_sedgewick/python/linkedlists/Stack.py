@@ -31,7 +31,3 @@ class Stack:
 
         ret_str = "Stack : " + ret_str
         return ret_str
-
-
-
-
